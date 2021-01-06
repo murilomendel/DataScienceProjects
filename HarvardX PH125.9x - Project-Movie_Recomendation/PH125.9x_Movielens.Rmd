@@ -1,0 +1,621 @@
+---
+title: "MovieLens_MMC.R"
+author: "Murilo Mendel Costa"
+date: "18/08/2020"  
+output: pdf_document
+---
+
+```{r, message = F, warning = F}
+library(tidyverse)
+library(caret)
+library(data.table)
+library(stringr)
+library(ggplot2)
+library(knitr)
+
+# MovieLens 10M dataset:
+# https://grouplens.org/datasets/movielens/10m/
+# http://files.grouplens.org/datasets/movielens/ml-10m.zip
+
+# 1.0 Downloading the data-set
+zip_file <- "~/ml-10m.zip"
+if(file.exists(zip_file)) {dl <- zip_file} else {
+  dl <- tempfile()
+  download.file("http://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+}
+
+# Unzip and read files
+ratings <- fread(text = gsub("::", "\t", readLines(unzip(dl, "ml-10M100K/ratings.dat"))),
+                 col.names = c("userId", "movieId", "rating", "timestamp"))
+
+movies <- str_split_fixed(readLines(unzip(dl, "ml-10M100K/movies.dat")), "\\::", 3)
+colnames(movies) <- c("movieId", "title", "genres")
+
+movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(movieId),
+                                           title = as.character(title),
+                                           genres = as.character(genres))
+
+movielens <- left_join(ratings, movies, by = "movieId")
+
+# Validation set will be 10% of MovieLens data
+set.seed(1, sample.kind="Rounding")
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+edx <- movielens[-test_index,]
+temp <- movielens[test_index,]
+
+# Make sure userId and movieId in validation set are also in edx set
+validation <- temp %>%
+  semi_join(edx, by = "movieId") %>%
+  semi_join(edx, by = "userId")
+
+# Add rows removed from validation set back into edx set
+removed <- anti_join(temp, validation)
+edx <- rbind(edx, removed)
+
+rm(dl, ratings, movies, test_index, temp, movielens, removed)
+
+#load("~/_projects/DataScience/R/HarvardX - DataScience Program/Capstone/data/downloaded.RData")
+```
+
+## 1. Introduction
+
+#### This document contain a study about MovieLens Dataset, which contains approximately 2,5 billion users ratings about 140 thousand movies over the time. The dataset features available in this study are:
+#### The data set is composed by 9000055 rows, 6 columns and has no missing value. The 6 columns are describe as:
+#### 1. userId: User identifier.
+#### 2. movieId: Movie identifier.
+#### 3. rating: Movie rating given by an user.
+#### 4. timestamp (numerical integer value): The time and date in which the rating was provided in seconds since January 1,0 1970
+#### 5. title: Movie title.
+#### 6. genres: Movie genre(s).
+
+```{r, message = F, warning = F}
+dim(edx)
+head(edx)
+summary(edx)
+```
+
+We can extract the Number of unique movies and user in the datase.
+
+```{r, message = F, warning = F}
+# Number of unique users and movies
+edx %>% summarise(unique_Users = n_distinct(userId),
+                  unique_Movies = n_distinct(movieId))
+```
+
+Movies with the greatest number of ratings.
+
+```{r, message = F, warning = F}
+# Greatest number of ratings
+edx %>% group_by(movieId, title) %>%
+  summarize(count = n()) %>%
+  arrange(desc(count))
+```
+
+Top five most given ratings.
+
+```{r, message = F, warning = F}
+# Top 5 Most given ratings
+edx %>% group_by(rating) %>%
+  summarize(count = n()) %>%
+  top_n(5) %>%
+  arrange(desc(count))
+```
+
+Max number of subgenres a movie could have.
+
+```{r, message = F, warning = F}
+# Getting the max number of genres in the data_set
+edx %>% mutate(genres_quantity = str_count(genres, "\\|") + 1) %>%
+  arrange(desc(genres_quantity)) %>%
+  select(genres, genres_quantity)
+```
+
+Conclusion: Movies can have from 0 to 8 sub genres.
+
+Top 30 Best rated movies and the number of votes each of them received
+
+```{r, message = F, warning = F}
+# Top 30 most rated movies and number of votes each of them received
+edx %>% group_by(movieId) %>%
+  summarise(stars = mean(rating),
+            votes = n()) %>%
+  left_join(edx, by = "movieId") %>%
+  select(movieId, title, votes, stars) %>%
+  unique() %>%
+  filter(title != "NA") %>%
+  arrange(desc(stars)) %>%
+  slice(1:30) %>%
+  mutate(ranking = 1:n()) %>%
+  select(ranking, everything()) %>%
+  kable()
+```
+
+Observation: Most of best rated movies has low votes (mostly less than 10)
+
+How many ratings users usually made?
+
+```{r, message = F, warning = F}
+# Quantity of ratings users mostly made
+edx %>% count(userId) %>%
+  ggplot(aes(n, fill = cut(n, 100))) +
+  geom_histogram(bins = 30, show.legend = F) +
+  theme_update() +
+  labs(x = "Quantity of ratings (log scale)", y = "Qa=uantity of Users") +
+  ggtitle("Quantity of Ratings over Quantity of users") +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill = "white")) +
+  scale_x_log10()
+```
+
+What ratings user usually give?
+
+```{r, message = F, warning = F}
+# Rating users mostly give
+edx %>% group_by(userId) %>%
+  summarise(m = mean(rating)) %>%
+  ggplot(aes(m, fill = cut(m, 100))) +
+  geom_histogram(bins = 30, show.legend = F) +
+  theme_update() +
+  labs(x = "Mean rating", y = "Users") +
+  ggtitle("Figure 2.3: Mean rating per users") +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill = "white")) +
+  scale_x_discrete(limits = c(seq(min(edx$rating),
+                                  max(edx$rating),
+                                  max(edx$rating)/n_distinct(edx$rating))))
+```
+
+## 2. Data Analysis
+
+### 2.1 Genres Study
+
+The firs variable which get some attention in the data set is the genres feature. To evaluate if genres feature have correlation with the movie rating, we need to split this character variable by the "|" delimiter.
+
+The first step is discover the max sub-genres a movie in the data set can have.
+
+```{r, message = F, warning = F}
+# Getting the max number of sub-genres in the data_set
+edx %>% mutate(genres_quantity = str_count(genres, "\\|") + 1) %>%
+  arrange(desc(genres_quantity)) %>%
+  select(genres, genres_quantity)
+```
+
+#### The code above shows:
+> The most sub-genres a movie in the dataset have are 8;
+> The least sub-genres a movie in the dataset have is 1;
+
+#### From this observation, we wish to compute the the proportion of each sub-genre in the movies observation.
+> The "genres" column is separated into 8 new columns, one for each sub-genre identified earlier;
+> It is then calculated the proportion of each sub-genre group in the data set.
+
+```{r, message = F, warning = F}
+edx <- edx %>%
+  separate(genres, c("genre_1", "genre_2", "genre_3", "genre_4", "genre_5", "genre_6", "genre_7", "genre_8"), "\\|", remove = FALSE) %>%
+  mutate(movie_release = as.integer(str_replace_all(str_extract(title,"\\s\\(\\d{4}\\)"), "\\(|\\)", "")),
+         title = str_replace(title, "\\s\\(\\d{4}\\)", ""),
+         rating_date = as.Date(as.POSIXct(timestamp, origin="1970-01-01")),
+         rating_wday = weekdays(rating_date)) %>%
+  separate(rating_date, c("rating_year", "rating_month", "rating_mday"))
+
+validation <- validation %>%
+  separate(genres, c("genre_1", "genre_2", "genre_3", "genre_4", "genre_5", "genre_6", "genre_7", "genre_8"), "\\|", remove = FALSE) %>%
+  mutate(movie_release = as.integer(str_replace_all(str_extract(title,"\\s\\(\\d{4}\\)"), "\\(|\\)", "")),
+         title = str_replace(title, "\\s\\(\\d{4}\\)", ""),
+         rating_date = as.Date(as.POSIXct(timestamp, origin="1970-01-01")),
+         rating_wday = weekdays(rating_date)) %>%
+  separate(rating_date, c("rating_year", "rating_month", "rating_mday"))
+```
+
+#### From the code above some observation can be done:
+> 100% of the movies have 1 sub-genre;
+> 80,6% of the movies have 2 sub-genres;
+> 51,3% of the movies have 3 sub-genre;
+> 21,1% of the movies have 4 sub-genres;
+> 5,5% of the movies have 5 sub-genre;
+> 0,8% of the movies have 6 sub-genres;
+> 0,1% of the movies have 7 sub-genre;
+> 0,0028% of the movies have 8 sub-genres;
+
+#### Conclusions:
+> We can consider to fit a model with only the first sub-genre (#1);
+> We can consider to fit a moodel with all 8 sub-genres (#2);
+> We can try fill the NA's sub-genres observation by replicating the known genres of each movie (#3).
+
+```{r, message = F, warning = F}
+# List of every 16 possible sub-genres
+gen <- c("Comedy", "Action", "Children", "Adventure", "Animation", "Drama", "Crime",
+         "Sci-Fi", "Horror", "Thriller", "Film-Noir", "Mystery", "Western", "Documentary",
+         "Romance", "Fantasy", "Musical", "War", "IMAX", "(no genres listed)")
+
+# Evaluating the mean movie rating for every sub-genre columns over every possible genre
+genre_rate <- sapply(gen, function(g){
+  r1 <- edx %>% filter(genre_1 == g) %>% summarise(mean_rating_genre_1 = mean(rating))
+  r2 <- edx %>% filter(genre_2 == g) %>% summarise(mean_rating_genre_2 = mean(rating))
+  r3 <- edx %>% filter(genre_3 == g) %>% summarise(mean_rating_genre_3 = mean(rating))
+  r4 <- edx %>% filter(genre_4 == g) %>% summarise(mean_rating_genre_4 = mean(rating))
+  r5 <- edx %>% filter(genre_5 == g) %>% summarise(mean_rating_genre_5 = mean(rating))
+  r6 <- edx %>% filter(genre_6 == g) %>% summarise(mean_rating_genre_6 = mean(rating))
+  r7 <- edx %>% filter(genre_7 == g) %>% summarise(mean_rating_genre_7 = mean(rating))
+  r8 <- edx %>% filter(genre_8 == g) %>% summarise(mean_rating_genre_8 = mean(rating))
+  as.double(c(r1, r2, r3, r4, r5, r6, r7, r8))
+})
+
+# Transpose Matrix
+genre_rate <- t(genre_rate)
+rowMeans(genre_rate, na.rm = TRUE)
+
+# Filling the missing observations over genre_2 to genre_8
+# The filling process replicate the existing genres for the movie to the missing genres
+edx_filled <- edx %>% mutate(genre_2 = ifelse(is.na(genre_2), genre_1, genre_2),
+               genre_3 = ifelse(is.na(genre_3), genre_1, genre_3),
+               genre_4 = ifelse(is.na(genre_4), genre_2, genre_4),
+               genre_5 = ifelse(is.na(genre_5), genre_1, genre_5),
+               genre_6 = ifelse(is.na(genre_6), genre_2, genre_6),
+               genre_7 = ifelse(is.na(genre_7), genre_3, genre_7),
+               genre_8 = ifelse(is.na(genre_8), genre_4, genre_8))
+
+# mean_rating vs genres matrix
+genre_rate_filled <- sapply(gen, function(g){
+  r1 <- edx_filled %>% filter(genre_1 == g) %>% summarise(mean_rating_genre_1 = mean(rating))
+  r2 <- edx_filled %>% filter(genre_2 == g) %>% summarise(mean_rating_genre_2 = mean(rating))
+  r3 <- edx_filled %>% filter(genre_3 == g) %>% summarise(mean_rating_genre_3 = mean(rating))
+  r4 <- edx_filled %>% filter(genre_4 == g) %>% summarise(mean_rating_genre_4 = mean(rating))
+  r5 <- edx_filled %>% filter(genre_5 == g) %>% summarise(mean_rating_genre_5 = mean(rating))
+  r6 <- edx_filled %>% filter(genre_6 == g) %>% summarise(mean_rating_genre_6 = mean(rating))
+  r7 <- edx_filled %>% filter(genre_7 == g) %>% summarise(mean_rating_genre_7 = mean(rating))
+  r8 <- edx_filled %>% filter(genre_8 == g) %>% summarise(mean_rating_genre_8 = mean(rating))
+  as.double(c(r1, r2, r3, r4, r5, r6, r7, r8))
+})
+
+# Transpose Matrix
+genre_rate_filled <- t(genre_rate_filled)
+rowMeans(genre_rate_filled, na.rm = TRUE)
+
+# Mean difference between rates is 9.7% between original model and filled model 
+mean(abs(rowMeans(genre_rate, na.rm = TRUE) - rowMeans(genre_rate_filled, na.rm = TRUE)))
+```
+
+#### The code above evaluate the mean user rating for each sub-genre, considering both:
+> The original model, disregarding the NA's values, and;
+> A model which every NA value is filled by replicating a movie known genre to it.
+
+#### Conclusions:
+> 1. Filling the missing sub-genres values by replicating a movie known genre implies changing the original mean rates by 9,7% (# Discard Hypothesis #3)
+
+### 2.2 Movie Release Year Study
+
+In this section, the ideia is to split the the movie title and extract a new feature about the movie release year.
+
+From this new variable, it's possible to study some correlation between movie ratings for newest and oldest movies.
+
+```{r, message = F, warning = F}
+# Negative correlation so close to 0, showing that newest movies in general have lower ratings
+cor(edx$rating, edx$movie_release)
+```
+
+```{r, message = F, warning = F}
+# Plotting Quantity of ratings over movies release year
+edx %>% group_by(movie_release) %>%
+  summarize(count = n()) %>%
+  ggplot() +
+  geom_col(aes(movie_release, count)) +
+  geom_hline(aes(yintercept = mean(count)), size = 1, colour = 'blue') +
+  theme(plot.title = element_text(hjust = 0.5, size = 16)) +
+  labs(title = "Ratings Quantity Vs. Release Year",
+       caption = "Data from: http://files.grouplens.org/datasets/movielens/ml-10m.zip") +
+  xlab("Movie Release Year") +
+  ylab("Ratings Quantity")
+```
+
+#### Observations:
+> The correlation variable between ratings and the movie release year is -0.12, very close to zero, which means low correlation, but a slightly trend showing newest movies have lower mean rating than oldest movies.
+> Despite that, it's clearly visible from the column plot that movies released before 1980 have less ratings than the average of the entire period.
+
+#### Conclusions:
+> Oldest movies have less ratings reviews, and for this reason have higher ratings.
+> Despite the fact that the movie release year is few correlated to the movie ratings, it will be added to the models for a better analysis.
+
+### - 2.3 Timeastamp Feature Study
+In this section, the timestamp feature will be converted to a date, and we will study if this feature has some correlation to the movies ratings and to other features.
+
+```{r, message = F, warning = F}
+# Quantity of ratings per Year
+edx %>% group_by(rating_year) %>%
+  summarize(count = n()) %>%
+  ggplot() +
+  geom_col(aes(rating_year, count)) +
+  geom_hline(aes(yintercept = mean(count)), size = 1, colour = 'blue', na.rm = TRUE) +
+  theme(plot.title = element_text(hjust = 0.5, size = 16),
+        axis.text.x = element_text(angle = 80)) +
+  labs(title = "Quantity of User Ratings per Year",
+       caption = "Data from: http://files.grouplens.org/datasets/movielens/ml-10m.zip") +
+  xlab("Year") +
+  ylab("Quantity of User Ratings")
+
+# Quantity of ratings per Month
+edx %>% group_by(rating_month) %>%
+  summarize(count = n()) %>%
+  ggplot() +
+  geom_col(aes(rating_month, count)) +
+  geom_hline(aes(yintercept = mean(count)), size = 1, colour = 'blue', na.rm = TRUE) +
+  theme(plot.title = element_text(hjust = 0.5, size = 16),
+        axis.text.x = element_text(angle = 80)) +
+  labs(title = "Quantity of User Ratings per Month",
+       caption = "Data from: http://files.grouplens.org/datasets/movielens/ml-10m.zip") +
+  xlab("Month") +
+  ylab("Quantity of User Ratings")
+
+# Quantity of ratings per month-day
+edx %>% group_by(rating_mday) %>%
+  summarize(count = n()) %>%
+  ggplot() +
+  geom_col(aes(rating_mday, count)) +
+  geom_hline(aes(yintercept = mean(count)), size = 1, colour = 'blue', na.rm = TRUE) +
+  theme(plot.title = element_text(hjust = 0.5, size = 16),
+        axis.text.x = element_text(angle = 80)) +
+  labs(title = "Quantity of User Ratings per Day",
+       caption = "Data from: http://files.grouplens.org/datasets/movielens/ml-10m.zip") +
+  xlab("Day") +
+  ylab("Quantity of User Ratings")
+
+# Quantity of ratings per week-day
+edx %>% group_by(rating_wday) %>%
+  summarize(count = n()) %>%
+  ggplot() +
+  geom_col(aes(rating_wday, count)) +
+  geom_hline(aes(yintercept = mean(count)), size = 1, colour = 'blue', na.rm = TRUE) +
+  theme(plot.title = element_text(hjust = 0.5, size = 16),
+        axis.text.x = element_text(angle = 80)) +
+  labs(title = "Quantity of User Ratings per Day",
+       caption = "Data from: http://files.grouplens.org/datasets/movielens/ml-10m.zip") +
+  xlab("Day") +
+  ylab("Quantity of User Ratings")
+
+```
+
+#### Observations:
+> From the plot about quantity of user ratings per year, we can observe three predominant peaks on 1996, 2000 and 2005, and four predominant valleys on 1995, 1997, 1998 and 2009, but in general, the distribution floats over the mean.   
+> From the plot about quantity of user ratings per month, we can observe that on July, October, November and December the quantity of ratings overcome the mean line. These are months with important holidays and/or vacations.
+> From the plot about quantity of user ratings per day in a month, we can observe less ratings in the end of the month. It's is probably given that not every month have 31 days.
+
+Data preparation to fit a linear model:
+
+```{r, message = F, warning = F}
+# Removing title, timestamp and genres columns
+edx <- subset(edx, select = -c(4,5,6,11,12,13,14))
+validation <- subset(validation, select = -c(4,5,6,11,12,13,14))
+
+# Data preparing for Linear modelling
+edx.numeric <- edx
+validation.numeric <- validation
+
+# Changing week day from character to numerical factors
+edx.numeric$rating_wday <- as.numeric(as.factor(edx.numeric$rating_wday))
+edx.numeric$rating_mday <- as.numeric(edx.numeric$rating_mday)
+edx.numeric$rating_month <- as.numeric(edx.numeric$rating_month)
+edx.numeric$rating_year <- as.numeric(edx.numeric$rating_year)
+
+validation.numeric$rating_wday <- as.numeric(as.factor(validation.numeric$rating_wday))
+validation.numeric$rating_mday <- as.numeric(validation.numeric$rating_mday)
+validation.numeric$rating_month <- as.numeric(validation.numeric$rating_month)
+validation.numeric$rating_year <- as.numeric(validation.numeric$rating_year)
+
+# Changing sub_genres to integer factors
+edx.numeric <- edx.numeric %>%
+  mutate(genre_1 = as.numeric(as.factor(genre_1)),
+         genre_2 = as.numeric(as.factor(genre_2)),
+         genre_3 = as.numeric(as.factor(genre_3)),
+         genre_4 = as.numeric(as.factor(genre_4)))
+
+validation.numeric <- validation.numeric %>%
+  mutate(genre_1 = as.numeric(as.factor(genre_1)),
+         genre_2 = as.numeric(as.factor(genre_2)),
+         genre_3 = as.numeric(as.factor(genre_3)),
+         genre_4 = as.numeric(as.factor(genre_4)))
+
+# Converting NA to -1
+edx.numeric$genre_2[is.na(edx.numeric$genre_2)] <- -1
+edx.numeric$genre_3[is.na(edx.numeric$genre_3)] <- -1
+edx.numeric$genre_4[is.na(edx.numeric$genre_4)] <- -1
+
+validation.numeric$genre_2[is.na(validation.numeric$genre_2)] <- -1
+validation.numeric$genre_3[is.na(validation.numeric$genre_3)] <- -1
+validation.numeric$genre_4[is.na(validation.numeric$genre_4)] <- -1
+
+```
+
+
+## 3. SYSTEM RECOMENDATION LEARNING ALGORITHMS MODELLING:
+
+### Linear Model:
+
+The model was trained with all features features
+
+```{r, message = F, warning = F}
+# Linear Regression Fitting
+linearRegression.fit <- lm(rating ~ ., data = edx.numeric)
+linearRegression.predict <- predict(linearRegression.fit, newdata = validation.numeric)
+linearRegression.rmse <- RMSE(linearRegression.predict, validation.numeric$rating)
+
+rmse.results <- tibble(Model = "01. Full Linear Model",
+                       RMSE = linearRegression.rmse,
+                       Goal = ifelse(linearRegression.rmse < 0.8649, "Under", "Over"))
+
+kable(rmse.results)
+```
+
+### Observations:
+> RMSE = 1.0498;
+> Low p-values for all 6 features, which indicates that all of the predictors are associated to the response;
+> R squared = 0.0204, Adjusted R-squared = 0.0204, metric values near to zero indicates that teh regression did not explain much of the variability in the response;
+> Low VIF (Variance Inflation Factor), which indicates low ammount of collinearity between features;
+
+
+### Naive approach:
+
+```{r, message = F, warning = F}
+mu = mean(edx$rating)
+
+naive.rmse = RMSE(validation$rating, mu)
+rmse.results <- rmse.results %>%
+  bind_rows(tibble(Model = "02. Mean Rating Approach(Naive)",
+                   RMSE = naive.rmse,
+                   Goal = ifelse(naive.rmse < 0.8649, "Under", "Over")))
+```
+
+Adding to the naive approach the effect of movies in the rating prediction
+
+```{r, message = F, warning = F}
+# Adding movie effect to the model
+# Rating = mean_rating + beta_movie_effect(movieId)
+movie_avg <- edx %>%
+  group_by(movieId) %>%
+  summarise(b_Movie = mean(rating-mu))
+
+head(movie_avg)
+
+movie_avg %>%
+  ggplot(aes(b_Movie, fill = cut(b_Movie, 100))) +
+  geom_histogram(bins = 30, show.legend = F) +
+  theme_update() +
+  labs(x = "beta_Movie", y = "Movies quantity") +
+  ggtitle("Movies Quantity for each computed beta_Movie") +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill = "white"))
+
+mean_movie.predict <- mu + validation %>%
+  left_join(movie_avg, by = "movieId") %>%
+  pull(b_Movie)
+
+mean_movie.rmse <- RMSE(mean_movie.predict, validation$rating)
+
+rmse.results <- rmse.results %>%
+  bind_rows(tibble(Model = "03. Mean Rating + Movie Effect",
+                   RMSE = mean_movie.rmse,
+                   Goal = ifelse(mean_movie.rmse < 0.8649, "Under", "Over")))
+
+kable(rmse.results)
+```
+
+Adding to the previous approach the effect of users in the rating prediction
+
+```{r, message = F, warning = F}
+# # Adding user effect to the previous model
+# Rating = mean_rating + beta_movie_effect(movieId) + beta_user_effect(userId)
+user_avg <- edx %>%
+  left_join(movie_avg, by = "movieId") %>%
+  group_by(userId) %>%
+  summarise(b_User = mean(rating - b_Movie - mu))
+
+head(user_avg)
+
+user_avg %>%
+  ggplot(aes(b_User, fill = cut(b_User, 100))) +
+  geom_histogram(bins = 30, show.legend = F) +
+  theme_update() +
+  labs(x = "beta_User", y = "Movies quantity") +
+  ggtitle("Movies Quantity for each computed beta_User") +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill = "white"))
+
+mean_movie_user.predict <- validation %>%
+  left_join(movie_avg, by = "movieId") %>%
+  left_join(user_avg, by = "userId") %>%
+  mutate(b_User = mu + b_Movie + b_User) %>%
+  pull(b_User)
+
+mean_movie_user.rmse <- RMSE(mean_movie_user.predict, validation$rating)
+
+rmse.results <- rmse.results %>%
+  bind_rows(tibble(Model = "04. Mean Rating + Movie Effect + User Effect",
+                   RMSE = mean_movie_user.rmse,
+                   Goal = ifelse(mean_movie_user.rmse < 0.8649, "Under", "Over")))
+kable(rmse.results)
+```
+
+Adding to the previous approach the effect of movie release year in the rating prediction
+
+```{r, message = F, warning = F}
+# Adding release year effect to the previous model
+# Rating = mean_rating + beta_movie_effect(movieId) + beta_user_effect(userId) + beta_release_year(movie_release)
+
+MovieReleaseYear_avg <- edx %>%
+  left_join(movie_avg, by = "movieId") %>%
+  left_join(user_avg, by = "userId") %>%
+  group_by(movie_release) %>%
+  summarise(b_MRY = mean(rating - b_Movie - b_User - mu))
+
+head(MovieReleaseYear_avg)
+
+MovieReleaseYear_avg %>%
+  ggplot(aes(b_MRY, fill = cut(b_MRY, 100))) +
+  geom_histogram(bins = 30, show.legend = F) +
+  theme_update() +
+  labs(x = "beta_MovieReleaseYear", y = "Movies quantity") +
+  ggtitle("Movies Quantity for each computed beta_User") +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill = "white"))
+
+MovieReleaseYear.predict <- validation %>%
+  left_join(movie_avg, by = "movieId") %>%
+  left_join(user_avg, by = "userId") %>%
+  left_join(MovieReleaseYear_avg, by = "movie_release") %>%
+  mutate(b_MRY = mu + b_Movie + b_User + b_MRY) %>%
+  pull(b_MRY)
+
+MovieReleaseYear.rmse <- RMSE(MovieReleaseYear.predict, validation$rating)
+
+rmse.results <- rmse.results %>%
+  bind_rows(tibble(Model = "05. Mean Rating + Movie Effect + User Effect + Movie Release Year",
+                   RMSE = MovieReleaseYear.rmse,
+                   Goal = ifelse(MovieReleaseYear.rmse < 0.8649, "Under", "Over")))
+kable(rmse.results)
+```
+
+Adding to the previous approach the effect of main movie genre (genre_1) in the rating prediction
+
+```{r, message = F, warning = F}
+# # Adding main genre effect to the previous model
+# Rating = mean_rating + beta_movie_effect(movieId) + beta_user_effect(userId) + beta_release_year(movie_release) + beta_main_genre
+
+mainGenre_avg <- edx %>%
+  left_join(movie_avg, by = "movieId") %>%
+  left_join(user_avg, by = "userId") %>%
+  left_join(MovieReleaseYear_avg, by = "movie_release") %>%
+  group_by(genre_1) %>%
+  summarise(b_genre = mean(rating - b_Movie - b_User - b_MRY - mu))
+
+head(mainGenre_avg)
+
+mainGenre_avg %>%
+  ggplot(aes(b_genre, fill = cut(b_genre, 100))) +
+  geom_histogram(bins = 30, show.legend = F) +
+  theme_update() +
+  labs(x = "beta_mainGenre", y = "Movies quantity") +
+  ggtitle("Movies Quantity for each computed beta_genre") +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill = "white"))
+
+mainGenre.predict <- validation %>%
+  left_join(movie_avg, by = "movieId") %>%
+  left_join(user_avg, by = "userId") %>%
+  left_join(MovieReleaseYear_avg, by = "movie_release") %>%
+  left_join(mainGenre_avg, by = "genre_1") %>%
+  mutate(b_genre = mu + b_Movie + b_User + b_MRY + b_genre) %>%
+  pull(b_genre)
+
+mainGenre.rmse <- RMSE(mainGenre.predict, validation$rating)
+
+rmse.results <- rmse.results %>%
+  bind_rows(tibble(Model = "06. Mean Rating + Movie Effect + User Effect + Movie Release Year + Genre Effecf",
+                   RMSE = mainGenre.rmse,
+                   Goal = ifelse(mainGenre.rmse < 0.8649, "Under", "Over")))
+kable(rmse.results)
+```
+
