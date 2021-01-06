@@ -1,0 +1,120 @@
+---
+title: "Case1"
+author: "Murilo Mendel Costa"
+date: "08/07/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dslabs)
+library(tidyverse)
+library(ggplot2)
+library(forecast)
+```
+
+```{r load_data, include=FALSE}
+cwd <- getwd()
+file <- "/data/TFP.csv"
+path <- file.path(cwd, file)
+
+tfp_df <- as.data.frame(read_csv(path, col_names = TRUE))
+colnames(tfp_df) <- c("country", "year", "tfpna")
+```
+
+### Total Factor Productivity Report
+
+#### This document contain a report study about Total Factor Productivity at a constant national price (2005 = 1) over 62 years (1950 to 2011) for three countries : USA, Canada and Mexico.
+#### Total Factor Productivity is measured by dividing the total output for the weighted average of labour and capital, approximately respectively 0.3 and 0.7.
+
+$TFP = \dfrac{Output}{0.7labour + 0.3capital}$
+
+#### TFP > 1: means that the country is producing more than it labour and capital availability.<br/>
+#### TFP < 1: means that the country is producing less than it labour and capital sources availability.<br/>
+
+### 1 - Exploratory Data Analysis
+
+#### The current data set has no missing values, and is composed by:
+#### - A categorical char value for country names.
+#### - A numerical integer feature for the corresponding measurement years.
+#### - A numerical float feature for the TFP measurement.
+
+```{r tfp_plot, echo=FALSE, fig.width=14, fig.height=6}
+tfp_df %>% ggplot + 
+  geom_line(aes(x = year, y = tfpna, color = country), lwd = 1.1) +
+  theme(plot.title = element_text(hjust = 0.5, size = 16)) +
+  ggtitle("Total Factor Productivity over Years") +
+  ylab("TFP") + 
+  xlab("Years")
+```
+
+#### From a a summary data line plot, some obesrvations and conlcusions can be taken, considering 2005 as the reference to TFP = 1.0
+
+### Observations:
+#### - Mexican TFP increased from 0.8 to almost 1.4 from 1950 to 1980. (On 1955 had reach TFP = 1.0).
+#### - From there, Mexican TFP started to decrease until 2011, where it reached TFP slightly below 1.0.
+#### - Canadian TFP behavior showed the smallest variance over the period, ranging between 0.9 < TFP < 1.1.
+#### - USA TFP showed a constant growth since 1950 to 2011, overcoming the other two countries TFP after 2009.
+
+### Conclusions:
+#### - Canadian TFP economy measurement seems to kept a balance over it Outputs and labels/capital over that period.
+#### - USA TFP economy measurement shows a slightly linear improvement since 1950, going from an unproductive scenario where the output was 40% less than the country labour/capital to a scenario where it reached a stable balance.
+#### - Mexican TFP economy measurement showed a huge difference between it outputs and it labour/capital availability, reaching on 1980 a overproductive scenario with 40% higher Outputs than it labour/capital availability. From 1980 to 2011, it TFP decreaced to a slightly unproductive scenario.
+
+### 2 - Forecasting 10 years of the series
+
+```{r forecast, include=FALSE}
+# Creating Time Series Variable for each country
+USA_TSobj <- ts(tfp_df %>% filter(country == "USA"))
+CAN_TSobj <- ts(tfp_df %>% filter(country == "CAN"))
+MEX_TSobj <- ts(tfp_df %>% filter(country == "MEX"))
+
+# TBATS autocorrelations descriptions
+tmp_tbats_USA <- tbats(USA_TSobj[,3])
+tmp_tbats_CAN <- tbats(CAN_TSobj[,3])
+tmp_tbats_MEX <- tbats(MEX_TSobj[,3])
+
+# Forecast by autocorrelations
+test_method_USA <- forecast::forecast(tmp_tbats_USA)
+test_method_CAN <- forecast::forecast(tmp_tbats_CAN)
+test_method_MEX <- forecast::forecast(tmp_tbats_MEX)
+
+# Create Dataframe for forecasted values
+tfp_USA_tm <- data.frame(c("USA"), c(2012:2021), c(test_method_USA$mean))
+tfp_CAN_tm <- data.frame(c("CAN"), c(2012:2021), c(test_method_CAN$mean))
+tfp_MEX_tm <- data.frame(c("MEX"), c(2012:2021), c(test_method_MEX$mean))
+
+#Changing column names for each forecasted dataframe
+colnames(tfp_USA_tm) <- c("country", "year", "tfpna")
+colnames(tfp_CAN_tm) <- c("country", "year", "tfpna")
+colnames(tfp_MEX_tm) <- c("country", "year", "tfpna")
+
+# Binding Dataframes
+tfp_tm <- rbind(rbind(tfp_df, tfp_USA_tm),rbind(tfp_CAN_tm,tfp_MEX_tm))
+
+```
+
+#### To make a forecast for the next 10 years, we use an approximation by TBATS forecast method, which shows the best approximation over every tested method. The results for the forecast are showed below:
+
+```{r forecast_plot, echo=FALSE, fig.width=14, fig.height=6}
+#Plotting Forecasting Results
+tfp_tm%>% ggplot +
+  geom_line(aes(x = year, y = tfpna, color = country), lwd = 1.1) +
+  geom_vline(xintercept = 2011) +
+  theme(plot.title = element_text(hjust = 0.5, size = 16)) +
+  ggtitle("Total Factor Productivity over Years") +
+  ylab("TFP") + 
+  xlab("Years")
+
+```
+
+### Conclusion:
+#### - The forecast shows that USA economy should keep growing by approximatelly the same linear coeficient as in the past.
+#### - Canadian economy should keep stable, with growth by a smaller rate than USA.
+#### - Mexican economy should fall by a small rate.
+
+### 3 - Another features could be analysed to help explain the TFP series.
+
+#### From  the labour variable point of view, some features like: population, emp, avh, hc and labsh are all correlated to the labour capacity of production, which has impact on a country economy.
+#### From the country output point od view, some variables are correlated to the country GDP, which could show a behavior correlated to ifpna feature: rgdpe, rgdpo, cgdpo, cgdpe, rgdpna.
+
